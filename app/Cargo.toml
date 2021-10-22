@@ -1,0 +1,18 @@
+[package]
+name = "app"
+version = "0.1.0"
+authors = ["Samuel Hicks <SamMHicks@hotmail.co.uk>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+rmp-serde = "0.15"
+rradio-messages = { path="../../internet-radio-rs/messages" }
+serde = { version = "1.0", features = ["derive", "rc"] }
+smol = "1.2"
+
+[dev-dependencies]
+mockall = "0.10"
