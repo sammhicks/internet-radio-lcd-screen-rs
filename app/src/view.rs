@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use rradio_messages::{ArcStr, PipelineState, Station};
 
@@ -79,14 +79,14 @@ fn display_short_ping_error(
 
 #[derive(PartialEq)]
 struct PingAndTemperatureDisplay {
-    ping: rradio_messages::PingTimes,
+    ping_times: rradio_messages::PingTimes,
     temperature: crate::Temperature,
     display_temperature: bool,
 }
 
 impl fmt::Display for PingAndTemperatureDisplay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.ping {
+        match self.ping_times {
             rradio_messages::PingTimes::None => f.write_str("No Ping Times"),
             rradio_messages::PingTimes::BadUrl => f.write_str("Bad URL"),
             rradio_messages::PingTimes::Gateway(Ok(gateway_ping)) => {
@@ -234,34 +234,30 @@ fn volume_and_pipeline_state_view(
     ))
 }
 
-fn station_view() -> impl Widget<Data = (Station, PlayerState)> {
+fn station_view() -> impl Widget<Data = (Arc<Station>, PlayerState)> {
     let (ping_segment, volume_and_pipeline_state_segment) = Line(0).split(13);
 
     let ping_and_temperature = Label::new(ping_segment).with_scope(FunctionScope::new(
         false,
         |_, _, _| {},
         |display_temperature,
-         (_, old_state): &(Station, PlayerState),
-         (_, state): &(Station, PlayerState)| {
+         (_, old_state): &(Arc<Station>, PlayerState),
+         (_, state): &(Arc<Station>, PlayerState)| {
             if old_state.ping_times != state.ping_times {
                 *display_temperature = !*display_temperature;
             }
         },
-        |display_temperature, (_, state): &(Station, PlayerState)| PingAndTemperatureDisplay {
-            ping: state.ping_times.clone(),
-            temperature: state.temperature,
-            display_temperature: *display_temperature,
+        |&mut display_temperature, (_, state): &(Arc<Station>, PlayerState)| {
+            PingAndTemperatureDisplay {
+                ping_times: state.ping_times.clone(),
+                temperature: state.temperature,
+                display_temperature,
+            }
         },
     ));
-    // .with_lens(|state| PingAndTemperatureDisplay {
-    //     ping: state.ping_times.clone(),
-    //     temperature: state.temperature,
-    //     display_temperature: false,
-    // })
-    // .with_lens(|(_, state): &(Station, PlayerState)| state.clone());
 
     let track_position =
-        Label::new(ping_segment).with_lens(|(station, state): &(Station, PlayerState)| {
+        Label::new(ping_segment).with_lens(|(station, state): &(Arc<Station>, PlayerState)| {
             let offset = match station.tracks.first() {
                 Some(first_track) => {
                     if first_track.is_notification {
@@ -280,7 +276,7 @@ fn station_view() -> impl Widget<Data = (Station, PlayerState)> {
         });
 
     let ping_or_track_position = EitherWidget::new(ping_and_temperature, track_position).with_lens(
-        |(station, state): &(Station, PlayerState)| {
+        |(station, state): &(Arc<Station>, PlayerState)| {
             // Either::B((station.clone(), state.clone()))
             if let rradio_messages::StationType::UrlList = station.source_type {
                 Either::A((station.clone(), state.clone()))
@@ -290,12 +286,13 @@ fn station_view() -> impl Widget<Data = (Station, PlayerState)> {
         },
     );
 
-    let volume_and_pipeline_state =
-        volume_and_pipeline_state_view(volume_and_pipeline_state_segment)
-            .with_lens(|(_, state): &(Station, PlayerState)| (state.volume, state.pipeline_state));
+    let volume_and_pipeline_state = volume_and_pipeline_state_view(
+        volume_and_pipeline_state_segment,
+    )
+    .with_lens(|(_, state): &(Arc<Station>, PlayerState)| (state.volume, state.pipeline_state));
 
     let title =
-        ScrollingLabel::new(Line(1)).with_lens(|(station, state): &(Station, PlayerState)| {
+        ScrollingLabel::new(Line(1)).with_lens(|(station, state): &(Arc<Station>, PlayerState)| {
             let current_track = station.tracks.get(state.current_track_index);
 
             state
@@ -337,7 +334,7 @@ fn station_view() -> impl Widget<Data = (Station, PlayerState)> {
             }
         },
     ))
-    .with_lens(|(station, state): &(Station, PlayerState)| {
+    .with_lens(|(station, state): &(Arc<Station>, PlayerState)| {
         let current_track = station.tracks.get(state.current_track_index);
         let current_tags = state.current_track_tags.as_ref();
 
@@ -461,10 +458,10 @@ fn no_station(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
 
     let local_ip = FixedLabel::new(ip_address, station_not_found_segment);
 
-    let station_not_found = EitherWidget::new(Label::new(station_not_found_segment), local_ip)
-        .with_lens(|state: &PlayerState| {
-            state.station_not_found.clone().map(StationNotFoundMessage)
-        });
+    let station_not_found =
+        EitherWidget::new(ScrollingLabel::new(station_not_found_segment), local_ip).with_lens(
+            |state: &PlayerState| state.station_not_found.clone().map(StationNotFoundMessage),
+        );
 
     let volume_and_pipeline_state =
         volume_and_pipeline_state_view(volume_and_pipeline_state_segment)
@@ -491,7 +488,37 @@ fn no_station(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
 }
 
 pub fn app(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
-    EitherWidget::new(station_view(), no_station(ip_address)).with_lens(|state: &PlayerState| {
+    let new_station_tics = 2_usize;
+
+    let new_station_index = Label::new(Line(0))
+        .with_lens(|station: &Arc<Station>| station.index.clone().unwrap_or_default());
+
+    let new_station_title = Label::new(Line(1))
+        .with_lens(|station: &Arc<Station>| station.title.clone().unwrap_or_default());
+
+    let station_view =
+        EitherWidget::new(new_station_index.group(new_station_title), station_view()).with_scope(
+            FunctionScope::new(
+                new_station_tics,
+                |tics_remaining, event, _| match event {
+                    WidgetEvent::Tick(_) => *tics_remaining = tics_remaining.saturating_sub(1),
+                },
+                move |tics_remaining, (old_station, _), (station, _)| {
+                    if !Arc::ptr_eq(old_station, station) {
+                        *tics_remaining = new_station_tics;
+                    }
+                },
+                |&mut tics_remaining, (station, state): &(Arc<Station>, PlayerState)| {
+                    if tics_remaining > 0 {
+                        Either::A(station.clone())
+                    } else {
+                        Either::B((station.clone(), state.clone()))
+                    }
+                },
+            ),
+        );
+
+    EitherWidget::new(station_view, no_station(ip_address)).with_lens(|state: &PlayerState| {
         match &state.current_station {
             Some(station) => Either::A((station.clone(), state.clone())),
             None => Either::B(state.clone()),

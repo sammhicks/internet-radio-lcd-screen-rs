@@ -81,7 +81,7 @@ impl From<Lines> for Segment {
                 row: row_start,
                 column: 0,
             },
-            length: (row_end - row_start) * SCREEN_WIDTH,
+            length: (1 + row_end - row_start) * SCREEN_WIDTH,
         }
     }
 }

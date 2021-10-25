@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use rradio_messages::{ArcStr, PingTimes, PipelineState, PlayerStateDiff, Station, TrackTags};
 
@@ -12,10 +12,22 @@ fn update_option<T>(current_value: &mut Option<T>, diff_value: rradio_messages::
     update_value(current_value, diff_value.into_option())
 }
 
+fn update_option_arc<T>(
+    current_value: &mut Option<Arc<T>>,
+    diff_value: rradio_messages::OptionDiff<T>,
+) {
+    update_value(
+        current_value,
+        diff_value
+            .into_option()
+            .map(|diff_value| diff_value.map(Arc::new)),
+    )
+}
+
 #[derive(Clone)]
 pub struct PlayerState {
     pub pipeline_state: PipelineState,
-    pub current_station: Option<Station>,
+    pub current_station: Option<Arc<Station>>,
     pub current_track_index: usize,
     pub current_track_tags: Option<TrackTags>,
     pub volume: i32,
@@ -47,7 +59,7 @@ impl PlayerState {
 
     pub fn apply_diff(mut self, diff: PlayerStateDiff) -> Self {
         update_value(&mut self.pipeline_state, diff.pipeline_state);
-        update_option(&mut self.current_station, diff.current_station);
+        update_option_arc(&mut self.current_station, diff.current_station);
         update_value(&mut self.current_track_index, diff.current_track_index);
         update_option(&mut self.current_track_tags, diff.current_track_tags);
         update_value(&mut self.volume, diff.volume);
