@@ -222,7 +222,7 @@ fn volume_and_pipeline_state_view(
                 *force_show_volume_tics_remaining = 0;
             }
         },
-        |&mut force_show_volume_tics_remaining, &(volume, pipeline_state)| {
+        |&force_show_volume_tics_remaining, &(volume, pipeline_state)| {
             if force_show_volume_tics_remaining > 0 {
                 Either::A(volume)
             } else if let PipelineState::Playing = pipeline_state {
@@ -232,6 +232,82 @@ fn volume_and_pipeline_state_view(
             }
         },
     ))
+}
+
+#[derive(Clone, PartialEq)]
+enum StationTags {
+    UrlList {
+        current_track_index: Option<usize>,
+        station_title: Option<ArcStr>,
+    },
+
+    Samba {
+        station_title: Option<ArcStr>,
+        artist: Option<ArcStr>,
+        album: Option<ArcStr>,
+    },
+    CD {
+        artist: Option<ArcStr>,
+        album: Option<ArcStr>,
+    },
+    Usb {
+        artist: Option<ArcStr>,
+        album: Option<ArcStr>,
+    },
+}
+
+impl fmt::Display for StationTags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sep = ", ";
+        match self.clone() {
+            StationTags::UrlList {
+                current_track_index,
+                station_title,
+            } => ConcatenatedTrackTags {
+                sep,
+                tags: [
+                    current_track_index.map(|current_track_index| {
+                        rradio_messages::arcstr::format!("{}", current_track_index)
+                    }),
+                    station_title,
+                ],
+            }
+            .fmt(f),
+            StationTags::Samba {
+                station_title,
+                artist,
+                album,
+            } => ConcatenatedTrackTags {
+                sep,
+                tags: [station_title, artist, album],
+            }
+            .fmt(f),
+            StationTags::CD { artist, album } | StationTags::Usb { artist, album } => {
+                ConcatenatedTrackTags {
+                    sep,
+                    tags: [artist, album],
+                }
+                .fmt(f)
+            }
+        }
+    }
+}
+
+fn displayed_url_list_track_index(station: &Station, state: &PlayerState) -> Option<usize> {
+    let playlist_starts_with_notification = station.tracks.get(0)?.is_notification;
+    let track_index_offset = if playlist_starts_with_notification {
+        0
+    } else {
+        1
+    };
+
+    let track_index = state.current_track_index + track_index_offset;
+
+    if track_index > 1 {
+        Some(track_index)
+    } else {
+        None
+    }
 }
 
 fn station_view() -> impl Widget<Data = (Arc<Station>, PlayerState)> {
@@ -247,7 +323,7 @@ fn station_view() -> impl Widget<Data = (Arc<Station>, PlayerState)> {
                 *display_temperature = !*display_temperature;
             }
         },
-        |&mut display_temperature, (_, state): &(Arc<Station>, PlayerState)| {
+        |&display_temperature, (_, state): &(Arc<Station>, PlayerState)| {
             PingAndTemperatureDisplay {
                 ping_times: state.ping_times.clone(),
                 temperature: state.temperature,
@@ -277,7 +353,6 @@ fn station_view() -> impl Widget<Data = (Arc<Station>, PlayerState)> {
 
     let ping_or_track_position = EitherWidget::new(ping_and_temperature, track_position).with_lens(
         |(station, state): &(Arc<Station>, PlayerState)| {
-            // Either::B((station.clone(), state.clone()))
             if let rradio_messages::StationType::UrlList = station.source_type {
                 Either::A((station.clone(), state.clone()))
             } else {
@@ -291,74 +366,71 @@ fn station_view() -> impl Widget<Data = (Arc<Station>, PlayerState)> {
     )
     .with_lens(|(_, state): &(Arc<Station>, PlayerState)| (state.volume, state.pipeline_state));
 
-    let title =
+    let station_tags =
         ScrollingLabel::new(Line(1)).with_lens(|(station, state): &(Arc<Station>, PlayerState)| {
             let current_track = station.tracks.get(state.current_track_index);
+            let current_tags = state.current_track_tags.as_ref();
 
-            state
-                .current_track_tags
-                .as_ref()
-                .and_then(|tags| {
-                    tags.title
-                        .clone()
-                        .or_else(|| current_track.and_then(|track| track.title.clone()))
-                })
-                .or_else(|| station.title.clone())
-                .unwrap_or_default()
+            let station_title = current_tags
+                .and_then(|tags| tags.organisation.clone())
+                .or_else(|| station.title.clone());
+
+            let artist = current_tags
+                .and_then(|tags| tags.artist.clone())
+                .or_else(|| current_track.and_then(|track| track.artist.clone()));
+
+            let album = current_tags
+                .and_then(|tags| tags.album.clone())
+                .or_else(|| current_track.and_then(|track| track.album.clone()));
+
+            match station.source_type {
+                rradio_messages::StationType::UrlList => StationTags::UrlList {
+                    current_track_index: displayed_url_list_track_index(station, state),
+                    station_title,
+                },
+                rradio_messages::StationType::Samba => StationTags::Samba {
+                    station_title,
+                    artist,
+                    album,
+                },
+                rradio_messages::StationType::CD => StationTags::CD { artist, album },
+                rradio_messages::StationType::Usb => StationTags::Usb { artist, album },
+            }
         });
 
-    let track_metadata_and_buffer = EitherWidget::new(ScrollingLabel::new(Lines(2, 3)), {
-        let track_metadata =
-            ScrollingLabel::new(Line(2)).with_lens(|(tags, _): &(ArcStr, _)| tags.clone());
-        let buffer = Label::new(Line(3)).with_lens(|(_, state): &(_, PlayerState)| state.buffering);
-        track_metadata.group(buffer)
-    })
-    .with_scope(FunctionScope::new(
-        None,
-        |_, _, _| {},
-        |scope_data, (old_tags, _), (tags, _)| {
-            if old_tags != tags {
-                *scope_data = None;
-            }
+    let track_title = EitherWidget::new(
+        {
+            let track_metadata =
+                ScrollingLabel::new(Line(2)).with_lens(|(tags, _): &(ArcStr, _)| tags.clone());
+            let buffer = Label::new(Line(3)).with_lens(|&(_, buffering): &(_, u8)| buffering);
+            track_metadata.group(buffer)
         },
-        |scope_data: &mut Option<ArcStr>,
-         (tags, state): &(ConcatenatedTrackTags<3>, PlayerState)| {
-            let tags = scope_data
-                .get_or_insert_with(|| ArcStr::from(tags.to_string()))
-                .clone();
-
-            if tags.chars().count() > 20 {
-                Either::A(tags)
-            } else {
-                Either::B((tags, state.clone()))
-            }
-        },
-    ))
+        ScrollingLabel::new(Lines(2, 3)),
+    )
     .with_lens(|(station, state): &(Arc<Station>, PlayerState)| {
         let current_track = station.tracks.get(state.current_track_index);
         let current_tags = state.current_track_tags.as_ref();
 
-        (
-            ConcatenatedTrackTags {
-                sep: ", ",
-                tags: [
-                    current_tags.and_then(|tags| tags.organisation.clone()),
-                    current_tags
-                        .and_then(|tags| tags.artist.clone())
-                        .or_else(|| current_track.and_then(|track| track.artist.clone())),
-                    current_tags
-                        .and_then(|tags| tags.album.clone())
-                        .or_else(|| current_track.and_then(|track| track.album.clone())),
-                ],
-            },
-            state.clone(),
-        )
+        let title = current_tags
+            .and_then(|tags| tags.title.clone())
+            .or_else(|| current_track.and_then(|track| track.title.clone()))
+            .unwrap_or_default();
+
+        if let rradio_messages::StationType::UrlList = station.source_type {
+            if title.chars().count() > 20 {
+                Either::B(title)
+            } else {
+                Either::A((title, state.buffering))
+            }
+        } else {
+            Either::B(title)
+        }
     });
 
     ping_or_track_position
         .group(volume_and_pipeline_state)
-        .group(title)
-        .group(track_metadata_and_buffer)
+        .group(station_tags)
+        .group(track_title)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -508,7 +580,7 @@ pub fn app(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
                         *tics_remaining = new_station_tics;
                     }
                 },
-                |&mut tics_remaining, (station, state): &(Arc<Station>, PlayerState)| {
+                |&tics_remaining, (station, state): &(Arc<Station>, PlayerState)| {
                     if tics_remaining > 0 {
                         Either::A(station.clone())
                     } else {

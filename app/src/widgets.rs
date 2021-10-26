@@ -364,14 +364,14 @@ pub trait Scope {
 
     fn reset(&mut self);
 
-    fn data(&mut self, data: &Self::In) -> Self::Out;
+    fn data(&self, data: &Self::In) -> Self::Out;
 }
 
 pub struct FunctionScope<Data: Clone, In, Out, E, U, D>
 where
     E: Fn(&mut Data, &WidgetEvent, &In),
     U: Fn(&mut Data, &In, &In),
-    D: Fn(&mut Data, &In) -> Out,
+    D: Fn(&Data, &In) -> Out,
 {
     initial_data: Data,
     data: Data,
@@ -385,7 +385,7 @@ impl<Data: Clone, In, Out, E, U, D> FunctionScope<Data, In, Out, E, U, D>
 where
     E: Fn(&mut Data, &WidgetEvent, &In),
     U: Fn(&mut Data, &In, &In),
-    D: Fn(&mut Data, &In) -> Out,
+    D: Fn(&Data, &In) -> Out,
 {
     pub fn new(data: Data, handle_event: E, handle_update: U, produce_data: D) -> Self {
         Self {
@@ -403,7 +403,7 @@ impl<Data: Clone, In, Out, E, U, D> Scope for FunctionScope<Data, In, Out, E, U,
 where
     E: Fn(&mut Data, &WidgetEvent, &In),
     U: Fn(&mut Data, &In, &In),
-    D: Fn(&mut Data, &In) -> Out,
+    D: Fn(&Data, &In) -> Out,
 {
     type In = In;
     type Out = Out;
@@ -420,8 +420,8 @@ where
         self.data = self.initial_data.clone();
     }
 
-    fn data(&mut self, data: &Self::In) -> Self::Out {
-        (self.produce_data)(&mut self.data, data)
+    fn data(&self, data: &Self::In) -> Self::Out {
+        (self.produce_data)(&self.data, data)
     }
 }
 
