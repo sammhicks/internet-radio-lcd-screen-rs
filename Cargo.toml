@@ -2,5 +2,6 @@
 
 members = [
     "app",
+    "screen_driver",
     "terminal_driver"
 ]
