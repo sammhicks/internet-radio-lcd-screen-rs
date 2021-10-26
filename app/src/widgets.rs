@@ -1,5 +1,7 @@
 use std::{fmt::Display, marker::PhantomData};
 
+use unidecode::unidecode_char;
+
 use crate::display::{Segment, TextDisplay};
 
 pub enum WidgetEvent {
@@ -159,6 +161,27 @@ impl<T: Display + PartialEq> Widget for Label<T> {
     }
 }
 
+struct UniDecode<W: std::fmt::Write>(W);
+
+impl<W: std::fmt::Write> std::fmt::Write for UniDecode<W> {
+    fn write_char(&mut self, c: char) -> std::fmt::Result {
+        let handled_chars = ['é', 'è', 'à', 'ä', 'ñ', 'ö', 'ü', 'π', 'µ', '~', ''];
+
+        if handled_chars.contains(&c) {
+            self.0.write_char(c)
+        } else {
+            self.0.write_str(match unidecode_char(c) {
+                "[?]" => "�",
+                s => s,
+            })
+        }
+    }
+
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        s.chars().try_for_each(|c| self.write_char(c))
+    }
+}
+
 pub struct ScrollingLabel<T: Display + PartialEq> {
     needs_repainting: bool,
     start_position: usize,
@@ -185,7 +208,14 @@ impl<T: Display + PartialEq> ScrollingLabel<T> {
     }
 
     fn generate_text<'t>(text: &'t mut Option<String>, data: &T) -> &'t str {
-        text.get_or_insert_with(|| data.to_string()).as_str()
+        use std::fmt::Write;
+
+        text.get_or_insert_with(|| {
+            let mut buffer = String::new();
+            write!(UniDecode(&mut buffer), "{}", data).unwrap();
+            buffer
+        })
+        .as_str()
     }
 
     fn reset_scroll(&mut self) {

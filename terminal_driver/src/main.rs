@@ -44,6 +44,14 @@ impl app::CharacterDisplay for TerminalDisplay {
     }
 
     fn write_char(&mut self, c: char) {
+        let c = match c {
+            '\u{E000}' => '▌',
+            '\u{E001}' => '▏',
+            '\u{E002}' => '|',
+            '\u{E003}' => '▕',
+            '\u{E004}' => '▐',
+            _ => c,
+        };
         write!(self.stdout, "{}", c).unwrap();
         self.stdout.flush().unwrap();
     }

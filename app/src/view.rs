@@ -1,4 +1,8 @@
-use std::{fmt, sync::Arc, time::Duration};
+use std::{
+    fmt::{self, Write},
+    sync::Arc,
+    time::Duration,
+};
 
 use rradio_messages::{ArcStr, PipelineState, Station};
 
@@ -310,6 +314,22 @@ fn displayed_url_list_track_index(station: &Station, state: &PlayerState) -> Opt
     }
 }
 
+#[derive(PartialEq)]
+struct BufferingBar(u8);
+
+impl fmt::Display for BufferingBar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let position = (self.0 / 5).min(19);
+        let char_code = self.0 % 5;
+
+        for _ in 0..position {
+            f.write_char(' ')?;
+        }
+
+        f.write_char(unsafe { char::from_u32_unchecked(0xE000_u32 + u32::from(char_code)) })
+    }
+}
+
 fn station_view() -> impl Widget<Data = (Arc<Station>, PlayerState)> {
     let (ping_segment, volume_and_pipeline_state_segment) = Line(0).split(13);
 
@@ -402,7 +422,7 @@ fn station_view() -> impl Widget<Data = (Arc<Station>, PlayerState)> {
         {
             let track_metadata =
                 ScrollingLabel::new(Line(2)).with_lens(|(tags, _): &(ArcStr, _)| tags.clone());
-            let buffer = Label::new(Line(3)).with_lens(|&(_, buffering): &(_, u8)| buffering);
+            let buffer = Label::new(Line(3)).with_lens(|&(_, buffering)| BufferingBar(buffering));
             track_metadata.group(buffer)
         },
         ScrollingLabel::new(Lines(2, 3)),
@@ -565,7 +585,7 @@ pub fn app(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
     let new_station_index = Label::new(Line(0))
         .with_lens(|station: &Arc<Station>| station.index.clone().unwrap_or_default());
 
-    let new_station_title = Label::new(Line(1))
+    let new_station_title = ScrollingLabel::new(Line(1))
         .with_lens(|station: &Arc<Station>| station.title.clone().unwrap_or_default());
 
     let station_view =
