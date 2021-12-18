@@ -25,6 +25,21 @@ fn update_option_arc<T>(
 }
 
 #[derive(Clone)]
+pub struct SharedError(Arc<rradio_messages::Error>);
+
+impl std::fmt::Display for SharedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq for SharedError {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[derive(Clone)]
 pub struct PlayerState {
     pub pipeline_state: PipelineState,
     pub current_station: Option<Arc<Station>>,
@@ -36,19 +51,26 @@ pub struct PlayerState {
     pub track_position: Option<Duration>,
     pub ping_times: PingTimes,
     pub station_not_found: Option<ArcStr>,
+    pub current_error: Option<SharedError>,
     pub temperature: crate::Temperature,
 }
 
 impl PlayerState {
     pub fn handle_log_message(mut self, message: rradio_messages::LogMessage) -> Self {
-        if let rradio_messages::LogMessage::Error(rradio_messages::Error::StationError(
-            rradio_messages::StationError::StationNotFound { index, .. },
-        )) = message
-        {
-            self.station_not_found = Some(index);
-        }
+        match message {
+            rradio_messages::LogMessage::Error(error) => {
+                if let rradio_messages::Error::StationError(
+                    rradio_messages::StationError::StationNotFound { index, .. },
+                ) = error
+                {
+                    self.station_not_found = Some(index);
+                } else {
+                    self.current_error = Some(SharedError(Arc::new(error)));
+                }
 
-        self
+                self
+            }
+        }
     }
 
     pub fn with_new_temperature(mut self, temperature: crate::Temperature) -> Self {
@@ -58,6 +80,11 @@ impl PlayerState {
     }
 
     pub fn apply_diff(mut self, diff: PlayerStateDiff) -> Self {
+        if let rradio_messages::OptionDiff::ChangedToSome(_) = &diff.current_station {
+            self.station_not_found = None;
+            self.current_error = None;
+        }
+
         update_value(&mut self.pipeline_state, diff.pipeline_state);
         update_option_arc(&mut self.current_station, diff.current_station);
         update_value(&mut self.current_track_index, diff.current_track_index);
@@ -83,8 +110,9 @@ impl Default for PlayerState {
             buffering: 0,
             track_duration: None,
             track_position: None,
-            station_not_found: None,
             ping_times: PingTimes::None,
+            station_not_found: None,
+            current_error: None,
             temperature: crate::Temperature(255),
         }
     }

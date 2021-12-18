@@ -7,7 +7,7 @@ use std::{
 use rradio_messages::{ArcStr, PipelineState, Station};
 
 use crate::{
-    display::{Line, Lines, Segment},
+    display::{EntireScreen, Line, Lines, Segment},
     state::PlayerState,
     widgets::{
         Either, EitherWidget, FixedLabel, FunctionScope, GeneratedLabel, Label, ScrollingLabel,
@@ -227,9 +227,9 @@ fn volume_and_pipeline_state_view(
             }
         },
         |&force_show_volume_tics_remaining, &(volume, pipeline_state)| {
-            if force_show_volume_tics_remaining > 0 {
-                Either::A(volume)
-            } else if let PipelineState::Playing = pipeline_state {
+            if force_show_volume_tics_remaining > 0
+                || matches!(pipeline_state, PipelineState::Playing)
+            {
                 Either::A(volume)
             } else {
                 Either::B(pipeline_state)
@@ -528,7 +528,7 @@ impl fmt::Display for PingDisplay {
 }
 
 #[derive(PartialEq, Eq)]
-struct DateFormatter(chrono::NaiveDate);
+pub struct DateFormatter(chrono::NaiveDate);
 
 impl fmt::Display for DateFormatter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -537,7 +537,7 @@ impl fmt::Display for DateFormatter {
 }
 
 #[derive(PartialEq, Eq)]
-struct TimeFormatter(chrono::NaiveTime);
+pub struct TimeFormatter(chrono::NaiveTime);
 
 impl fmt::Display for TimeFormatter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -579,7 +579,7 @@ fn no_station(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
         .group(clock_time)
 }
 
-pub fn app(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
+fn current_station() -> impl Widget<Data = (Arc<rradio_messages::Station>, PlayerState)> {
     let new_station_tics = 2_usize;
 
     let new_station_index = Label::new(Line(0))
@@ -588,32 +588,40 @@ pub fn app(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
     let new_station_title = ScrollingLabel::new(Line(1))
         .with_lens(|station: &Arc<Station>| station.title.clone().unwrap_or_default());
 
-    let station_view =
-        EitherWidget::new(new_station_index.group(new_station_title), station_view()).with_scope(
-            FunctionScope::new(
-                new_station_tics,
-                |tics_remaining, event, _| match event {
-                    WidgetEvent::Tick(_) => *tics_remaining = tics_remaining.saturating_sub(1),
-                },
-                move |tics_remaining, (old_station, _), (station, _)| {
-                    if !Arc::ptr_eq(old_station, station) {
-                        *tics_remaining = new_station_tics;
-                    }
-                },
-                |&tics_remaining, (station, state): &(Arc<Station>, PlayerState)| {
-                    if tics_remaining > 0 {
-                        Either::A(station.clone())
-                    } else {
-                        Either::B((station.clone(), state.clone()))
-                    }
-                },
-            ),
-        );
+    EitherWidget::new(new_station_index.group(new_station_title), station_view()).with_scope(
+        FunctionScope::new(
+            new_station_tics,
+            |tics_remaining, event, _| match event {
+                WidgetEvent::Tick(_) => *tics_remaining = tics_remaining.saturating_sub(1),
+            },
+            move |tics_remaining, (old_station, _), (station, _)| {
+                if !Arc::ptr_eq(old_station, station) {
+                    *tics_remaining = new_station_tics;
+                }
+            },
+            |&tics_remaining, (station, state): &(Arc<Station>, PlayerState)| {
+                if tics_remaining > 0 {
+                    Either::A(station.clone())
+                } else {
+                    Either::B((station.clone(), state.clone()))
+                }
+            },
+        ),
+    )
+}
 
-    EitherWidget::new(station_view, no_station(ip_address)).with_lens(|state: &PlayerState| {
-        match &state.current_station {
+pub fn app(ip_address: impl AsRef<str>) -> impl Widget<Data = PlayerState> {
+    let error_view = ScrollingLabel::<crate::state::SharedError>::new(EntireScreen);
+
+    EitherWidget::new(
+        error_view,
+        EitherWidget::new(current_station(), no_station(ip_address)),
+    )
+    .with_lens(|state: &PlayerState| match state.current_error.clone() {
+        Some(error) => Either::A(error),
+        None => Either::B(match &state.current_station {
             Some(station) => Either::A((station.clone(), state.clone())),
             None => Either::B(state.clone()),
-        }
+        }),
     })
 }
